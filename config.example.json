@@ -1,0 +1,15 @@
+{
+  "notes": {
+    "enabled": true,
+    "paths": [
+      "~/Documents/mindbuddy-notes"
+    ]
+  },
+  "calendar": {
+    "enabled": true,
+    "calendars": []
+  },
+  "screenTime": {
+    "enabled": true
+  }
+}
