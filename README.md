@@ -60,13 +60,13 @@ Edit `~/.mindbuddy/config.json`:
 
 ## 🧠 Supported LLM Providers
 
-| Provider | Model | Env Variable |
-|----------|-------|--------------|
-| [通义千问](https://dashscope.console.aliyun.com/) | qwen-plus | `QWEN_API_KEY` |
-| [智谱 GLM](https://open.bigmodel.cn/) | glm-4 | `ZHIPU_API_KEY` |
-| [DeepSeek](https://platform.deepseek.com/) | deepseek-chat | `DEEPSEEK_API_KEY` |
-| [百度千帆](https://console.bce.baidu.com/qianfan/) | ernie-4.0-8k | `QIANFAN_API_KEY` |
-| [OpenAI](https://api.openai.com/) | gpt-3.5-turbo | `OPENAI_API_KEY` |
+| Provider | Env Variable |
+|----------|--------------|
+| [通义千问](https://dashscope.console.aliyun.com/) | `QWEN_API_KEY` |
+| [智谱 GLM](https://open.bigmodel.cn/) | `ZHIPU_API_KEY` |
+| [DeepSeek](https://platform.deepseek.com/) | `DEEPSEEK_API_KEY` |
+| [百度千帆](https://console.bce.baidu.com/qianfan/) | `QIANFAN_API_KEY` + `QIANFAN_SECRET_KEY` |
+| [OpenAI](https://api.openai.com/) | `OPENAI_API_KEY` |
 
 ## 📁 Project Structure
 
