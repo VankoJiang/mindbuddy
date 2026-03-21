@@ -18,6 +18,7 @@ export interface RunEmbeddedPiAgentParams {
 export interface EmbeddedRunAttemptResult {
   aborted: boolean;
   timedOut: boolean;
+  errorMessage?: string;
   assistantTexts: string[];
   toolMetas: Array<{ toolName: string; meta?: string }>;
   usage?: {
@@ -33,6 +34,7 @@ export interface EmbeddedPiRunResult {
   text: string;
   aborted: boolean;
   timedOut: boolean;
+  errorMessage?: string;
   toolMetas: Array<{ toolName: string; meta?: string }>;
   usage?: {
     input?: number;

@@ -50,15 +50,24 @@ export async function runEmbeddedAttempt(
 
   let aborted = false;
   let timedOut = false;
+  let errorMessage: string | undefined;
+  let promptResult: unknown;
   try {
     if (timeoutController.signal.aborted) {
       throw new Error('aborted');
     }
-    await session.prompt(params.prompt, { expandPromptTemplates: false });
+    promptResult = await session.prompt(params.prompt, { expandPromptTemplates: false });
+    if (subscription.assistantTexts.length === 0) {
+      const fallbackText = extractTextFromPromptResult(promptResult);
+      if (fallbackText) {
+        subscription.assistantTexts.push(fallbackText);
+      }
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     aborted = true;
     timedOut = timeoutController.signal.aborted || message.toLowerCase().includes('timeout');
+    errorMessage = message;
   } finally {
     clearTimeout(timeout);
     subscription.unsubscribe();
@@ -68,8 +77,48 @@ export async function runEmbeddedAttempt(
   return {
     aborted,
     timedOut,
+    errorMessage: errorMessage || subscription.getFirstError(),
     assistantTexts: subscription.assistantTexts,
     toolMetas: subscription.toolMetas,
     usage: subscription.getUsageTotals(),
   };
+}
+
+function extractTextFromPromptResult(value: unknown, seen = new WeakSet<object>()): string {
+  if (!value) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (typeof value !== 'object') {
+    return '';
+  }
+
+  if (seen.has(value as object)) {
+    return '';
+  }
+  seen.add(value as object);
+
+  const object = value as Record<string, unknown>;
+  const directKeys = ['text', 'content', 'message', 'response'];
+  for (const key of directKeys) {
+    const candidate = object[key];
+    const extracted = extractTextFromPromptResult(candidate, seen);
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const extracted = extractTextFromPromptResult(item, seen);
+      if (extracted) {
+        return extracted;
+      }
+    }
+  }
+
+  return '';
 }

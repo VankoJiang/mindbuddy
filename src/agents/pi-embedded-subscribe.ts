@@ -13,8 +13,10 @@ type UsageTotals = {
 };
 
 export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionParams) {
+  const debugEvents = process.env.DEBUG_PI_EVENTS === '1';
   const assistantTexts: string[] = [];
   const toolMetas: Array<{ toolName: string; meta?: string }> = [];
+  const errorMessages: string[] = [];
   const usage: UsageTotals = {
     input: 0,
     output: 0,
@@ -24,12 +26,38 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   };
 
   const unsubscribe = params.session.subscribe((event: any) => {
+    if (debugEvents) {
+      const eventType = typeof event?.type === 'string' ? event.type : 'unknown';
+      const assistantType = typeof event?.assistantMessageEvent?.type === 'string'
+        ? event.assistantMessageEvent.type
+        : '';
+      console.log('[pi-event]', eventType, assistantType);
+      if (eventType === 'message_end') {
+        const role = event?.message?.role;
+        const preview = safeStringify(event?.message).slice(0, 500);
+        console.log('[pi-message-end]', role || 'unknown', preview);
+      }
+    }
+
+    const eventError = extractErrorMessage(event);
+    if (eventError) {
+      errorMessages.push(eventError);
+    }
+
     if (event?.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
       const delta = typeof event.assistantMessageEvent.delta === 'string'
         ? event.assistantMessageEvent.delta
         : '';
       if (delta) {
         assistantTexts.push(delta);
+      }
+      return;
+    }
+
+    if (event?.type === 'message_update') {
+      const messageEventText = extractText(event.assistantMessageEvent);
+      if (messageEventText) {
+        assistantTexts.push(messageEventText);
       }
       return;
     }
@@ -45,6 +73,13 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
 
     if (event?.type === 'message_end') {
       const message = event.message;
+      if (message?.role === 'assistant') {
+        const endedText = extractText(message);
+        if (endedText) {
+          assistantTexts.push(endedText);
+        }
+      }
+
       if (message?.role === 'assistant' && typeof message?.usage === 'object' && message.usage) {
         const usageValue = message.usage as Record<string, unknown>;
         usage.input += asPositiveNumber(usageValue.input_tokens ?? usageValue.input ?? 0);
@@ -75,6 +110,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     toolMetas,
     unsubscribe,
     getUsageTotals,
+    getFirstError: () => errorMessages[0],
   };
 }
 
@@ -92,4 +128,82 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function extractText(value: any): string {
+  if (!value) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value.text === 'string') {
+    return value.text;
+  }
+
+  if (typeof value.content === 'string') {
+    return value.content;
+  }
+
+  if (Array.isArray(value.content)) {
+    const chunks = value.content
+      .map((item: any) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+        if (typeof item?.text === 'string') {
+          return item.text;
+        }
+        return '';
+      })
+      .filter(Boolean);
+    return chunks.join('');
+  }
+
+  if (Array.isArray(value.parts)) {
+    const chunks = value.parts
+      .map((item: any) => {
+        if (typeof item === 'string') {
+          return item;
+        }
+        if (typeof item?.text === 'string') {
+          return item.text;
+        }
+        return '';
+      })
+      .filter(Boolean);
+    return chunks.join('');
+  }
+
+  return '';
+}
+
+function extractErrorMessage(event: any): string {
+  if (!event) {
+    return '';
+  }
+
+  const candidates = [
+    event.error?.message,
+    event.errorMessage,
+    event.message?.errorMessage,
+    event.message?.error?.message,
+    event.assistantMessageEvent?.error?.message,
+    event.assistantMessageEvent?.message,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  if (typeof event.type === 'string' && event.type.toLowerCase().includes('error')) {
+    const asText = safeStringify(event);
+    return asText.slice(0, 240);
+  }
+
+  return '';
 }

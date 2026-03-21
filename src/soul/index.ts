@@ -4,6 +4,7 @@ import path from 'node:path';
 export interface SoulSource {
   getPrompt(): string;
   getPath(): string;
+  setPrompt(content: string): void;
 }
 
 export class SoulProfile implements SoulSource {
@@ -37,6 +38,21 @@ export class SoulProfile implements SoulSource {
     this.cachedPrompt = content;
     this.cachedMtimeMs = stat.mtimeMs;
     return this.cachedPrompt;
+  }
+
+  setPrompt(content: string) {
+    const next = content.trim();
+    if (!next) {
+      throw new Error('soul.md 内容不能为空');
+    }
+
+    const dir = path.dirname(this.soulPath);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(this.soulPath, `${next}\n`, 'utf-8');
+
+    const stat = fs.statSync(this.soulPath);
+    this.cachedPrompt = next;
+    this.cachedMtimeMs = stat.mtimeMs;
   }
 }
 
