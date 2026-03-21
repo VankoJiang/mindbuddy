@@ -1,58 +1,136 @@
 // MindBuddy 入口文件
-import { Fastify } from 'fastify';
-import { createServer } from 'http';
+import Fastify from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { WebSocketServer, WebSocket } from 'ws';
 import { config } from 'dotenv';
 import { ChatAgent } from './agents/chat.js';
 import { DataSources } from './data-sources/index.js';
 import { LLMProvider } from './llm/index.js';
+import { SoulProfile } from './soul/index.js';
+import { renderAppHtml } from './web/app.js';
 
 config();
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
+const WS_ENABLED = process.env.WS_ENABLED === '1';
+const WS_PORT = Number(process.env.WS_PORT || 3001);
+
+interface ChatBody {
+  text?: string;
+  sessionId?: string;
+  provider?: string;
+  model?: string;
+}
 
 class MindBuddy {
-  private app: Fastify;
-  private wsServer: WebSocketServer;
+  private app: ReturnType<typeof Fastify>;
+  private wsServer: WebSocketServer | null;
   private agent: ChatAgent;
   private dataSources: DataSources;
   private llm: LLMProvider;
+  private soul: SoulProfile;
 
   constructor() {
     this.app = Fastify({ logger: true });
     this.llm = new LLMProvider();
+    this.soul = new SoulProfile();
     this.dataSources = new DataSources();
-    this.agent = new ChatAgent(this.llm, this.dataSources);
-    this.wsServer = new WebSocketServer({ port: PORT });
+    this.agent = new ChatAgent(this.llm, this.soul);
+    this.wsServer = WS_ENABLED ? new WebSocketServer({ port: WS_PORT }) : null;
   }
 
   async start() {
     await this.dataSources.init();
-    this.setupWebSocket();
+    if (this.wsServer) {
+      this.setupWebSocket();
+    }
     this.setupRoutes();
-    
+
     await this.app.listen({ port: PORT });
     console.log(`MindBuddy running at http://localhost:${PORT}`);
   }
 
   private setupWebSocket() {
-    this.wsServer.on('connection', (ws) => {
-      ws.on('message', async (data) => {
+    if (!this.wsServer) {
+      return;
+    }
+
+    this.wsServer.on('connection', (ws: WebSocket) => {
+      ws.on('message', async (data: Buffer) => {
         try {
-          const message = JSON.parse(data.toString());
+          const message = JSON.parse(data.toString()) as ChatBody;
+          const text = (message.text || '').trim();
+
+          if (!text) {
+            ws.send(JSON.stringify({ type: 'error', message: 'text is required' }));
+            return;
+          }
+
           const context = await this.dataSources.getContext();
-          const response = await this.agent.chat(message.text, context);
-          ws.send(JSON.stringify({ type: 'response', text: response }));
-        } catch (e) {
-          ws.send(JSON.stringify({ type: 'error', message: String(e) }));
+          const response = await this.agent.chat(
+            text,
+            context,
+            message.sessionId,
+            message.provider,
+            message.model,
+          );
+          ws.send(JSON.stringify({ type: 'response', text: response, context }));
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'error', message: String(error) }));
         }
       });
     });
   }
 
   private setupRoutes() {
-    this.app.get('/health', async () => ({ status: 'ok' }));
-    this.app.get('/context', async () => await this.dataSources.getContext());
+    this.app.get('/', async (_request: FastifyRequest, reply: FastifyReply) => {
+      reply.type('text/html');
+      return renderAppHtml();
+    });
+
+    this.app.get('/health', async () => ({
+      status: 'ok',
+      provider: this.llm.getProvider(),
+      model: this.llm.getModel(),
+      soulPath: this.soul.getPath(),
+      wsEnabled: WS_ENABLED,
+      now: new Date().toISOString(),
+    }));
+
+    this.app.get('/context', async () => this.dataSources.getContext());
+    this.app.get('/api/context', async () => this.dataSources.getContext());
+    this.app.get('/api/models', async () => ({
+      providers: this.llm.getProviders(),
+      defaults: {
+        provider: this.llm.getProvider(),
+        model: this.llm.getModel(),
+      },
+    }));
+
+    this.app.post('/api/chat', async (request: FastifyRequest<{ Body: ChatBody }>, reply: FastifyReply) => {
+      const text = (request.body?.text || '').trim();
+      if (!text) {
+        reply.code(400);
+        return { error: 'text is required' };
+      }
+
+      try {
+        const context = await this.dataSources.getContext();
+        const response = await this.agent.chat(
+          text,
+          context,
+          request.body?.sessionId,
+          request.body?.provider,
+          request.body?.model,
+        );
+        return { text: response, context };
+      } catch (error) {
+        reply.code(500);
+        return {
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
   }
 }
 
