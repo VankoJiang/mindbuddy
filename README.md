@@ -18,6 +18,10 @@ Lightweight AI companion with local memo + schedule awareness, powered by `pi-ag
 - ⏱️ **Screen Time Reading (Real Data)**:
   - Tracks frontmost macOS app usage using `lsappinfo`
   - Persists daily usage into `~/.mindbuddy/screentime-state.json`
+- ⚙️ **In-UI Runtime Config**:
+  - Configure Provider / Model / Base URL / API Key directly in the web UI
+- 🧭 **In-UI Soul Config**:
+  - Edit and save `soul.md` directly in the web UI
 - 🧩 **OpenClaw pi-agent Runtime**: Embedded `@mariozechner/pi-coding-agent` session
 - 🧠 **PI Conversation Flow**: Perception -> Integration -> Response
 
@@ -73,6 +77,8 @@ Notes:
 - `calendar.icsPaths` can be `.ics` file path or a directory containing `.ics` files.
 - On macOS, MindBuddy also tries to read Calendar app events directly.
 - Screen time data is collected from current frontmost app activity on macOS and aggregated by day.
+- Runtime settings changed in UI are saved to `~/.mindbuddy/runtime.json`.
+- Soul settings changed in UI are written back to `soul.md`.
 
 ## 🔌 API Endpoints
 
@@ -80,6 +86,10 @@ Notes:
 - `GET /health` - Service status
 - `GET /api/context` - Current context snapshot
 - `GET /api/models` - Provider status + default selection
+- `GET /api/runtime-config` - Runtime config snapshot
+- `PUT /api/runtime-config` - Update runtime config from UI
+- `GET /api/soul` - Read `soul.md`
+- `PUT /api/soul` - Update `soul.md`
 - `POST /api/chat` - Chat request
   - body: `{ "text": "...", "sessionId": "optional-session-id", "provider": "qwen", "model": "qwen-plus" }`
 - `WS ws://localhost:3001` - Optional websocket channel (enable with `WS_ENABLED=1`)

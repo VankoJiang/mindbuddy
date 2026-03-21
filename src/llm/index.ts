@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentTool } from '@mariozechner/pi-agent-core';
 import type { Model } from '@mariozechner/pi-ai';
@@ -26,9 +27,25 @@ interface ProviderDefinition {
   name: string;
   apiKeyEnv: string;
   runtimeProvider: string;
-  baseUrl: string;
+  defaultBaseUrl: string;
   requiresBaseUrl: boolean;
   baseUrlEnv: string;
+  compat?: {
+    supportsDeveloperRole?: boolean;
+    supportsReasoningEffort?: boolean;
+    thinkingFormat?: 'openai' | 'zai' | 'qwen' | 'qwen-chat-template' | 'openrouter';
+  };
+}
+
+interface ProviderOverride {
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+interface RuntimeStore {
+  provider?: string;
+  model?: string;
+  providers?: Record<string, ProviderOverride>;
 }
 
 export interface ProviderMeta {
@@ -37,6 +54,21 @@ export interface ProviderMeta {
   configured: boolean;
   apiKeyConfigured: boolean;
   baseUrlConfigured: boolean;
+  baseUrl: string;
+}
+
+export interface RuntimeConfigInput {
+  provider?: string;
+  model?: string;
+  providerSettings?: Record<string, { apiKey?: string; baseUrl?: string }>;
+}
+
+export interface RuntimeConfigPayload {
+  defaults: {
+    provider: string;
+    model: string;
+  };
+  providers: ProviderMeta[];
 }
 
 export class LLMProvider {
@@ -47,6 +79,8 @@ export class LLMProvider {
   private initError: string | null = null;
   private providerModels = new Map<string, Set<string>>();
   private providers: Map<string, ProviderDefinition>;
+  private runtimeStorePath: string;
+  private runtimeStore: RuntimeStore = { providers: {} };
 
   constructor() {
     this.config = {
@@ -57,6 +91,8 @@ export class LLMProvider {
     this.authStorage = AuthStorage.create();
     this.modelRegistry = new ModelRegistry(this.authStorage);
     this.tools = readOnlyTools as unknown as AgentTool[];
+    this.runtimeStorePath = path.join(process.env.HOME || '', '.mindbuddy', 'runtime.json');
+    this.loadRuntimeStore();
     this.providers = this.buildProviders();
     this.init();
   }
@@ -100,7 +136,7 @@ export class LLMProvider {
   }
 
   getProvider(): string {
-    return this.config.provider || 'unconfigured';
+    return this.config.provider;
   }
 
   getModel(): string {
@@ -109,16 +145,66 @@ export class LLMProvider {
 
   getProviders(): ProviderMeta[] {
     return Array.from(this.providers.values()).map(provider => {
-      const apiKeyConfigured = Boolean((process.env[provider.apiKeyEnv] || '').trim());
-      const baseUrlConfigured = provider.requiresBaseUrl ? Boolean(provider.baseUrl.trim()) : true;
+      const apiKeyConfigured = Boolean(this.resolveApiKey(provider));
+      const baseUrl = this.resolveBaseUrl(provider);
+      const baseUrlConfigured = provider.requiresBaseUrl ? Boolean(baseUrl) : true;
       return {
         id: provider.id,
         name: provider.name,
         configured: apiKeyConfigured && baseUrlConfigured,
         apiKeyConfigured,
         baseUrlConfigured,
+        baseUrl,
       };
     });
+  }
+
+  getRuntimeConfig(): RuntimeConfigPayload {
+    return {
+      defaults: {
+        provider: this.config.provider,
+        model: this.config.model,
+      },
+      providers: this.getProviders(),
+    };
+  }
+
+  updateRuntimeConfig(input: RuntimeConfigInput): RuntimeConfigPayload {
+    if (typeof input.provider === 'string') {
+      this.config.provider = input.provider.trim();
+    }
+    if (typeof input.model === 'string') {
+      this.config.model = input.model.trim();
+    }
+
+    const storeProviders = this.runtimeStore.providers || {};
+    const updates = input.providerSettings || {};
+    for (const [providerId, update] of Object.entries(updates)) {
+      if (!this.providers.has(providerId)) {
+        continue;
+      }
+      const current = storeProviders[providerId] || {};
+
+      if (typeof update.baseUrl === 'string') {
+        current.baseUrl = update.baseUrl.trim();
+      }
+      if (typeof update.apiKey === 'string') {
+        current.apiKey = update.apiKey.trim();
+      }
+
+      if (!current.baseUrl && !current.apiKey) {
+        delete storeProviders[providerId];
+      } else {
+        storeProviders[providerId] = current;
+      }
+    }
+
+    this.runtimeStore.provider = this.config.provider;
+    this.runtimeStore.model = this.config.model;
+    this.runtimeStore.providers = storeProviders;
+    this.saveRuntimeStore();
+    this.applyRuntimeKeys();
+    return this.getRuntimeConfig();
   }
 
   private init() {
@@ -131,11 +217,43 @@ export class LLMProvider {
     }
   }
 
+  private loadRuntimeStore() {
+    try {
+      if (!fs.existsSync(this.runtimeStorePath)) {
+        this.runtimeStore = { providers: {} };
+        return;
+      }
+
+      const raw = fs.readFileSync(this.runtimeStorePath, 'utf-8');
+      const parsed = JSON.parse(raw) as RuntimeStore;
+      this.runtimeStore = {
+        provider: typeof parsed.provider === 'string' ? parsed.provider.trim() : '',
+        model: typeof parsed.model === 'string' ? parsed.model.trim() : '',
+        providers: parsed.providers || {},
+      };
+
+      if (this.runtimeStore.provider) {
+        this.config.provider = this.runtimeStore.provider;
+      }
+      if (this.runtimeStore.model) {
+        this.config.model = this.runtimeStore.model;
+      }
+    } catch {
+      this.runtimeStore = { providers: {} };
+    }
+  }
+
+  private saveRuntimeStore() {
+    const dir = path.dirname(this.runtimeStorePath);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(this.runtimeStorePath, JSON.stringify(this.runtimeStore, null, 2), 'utf-8');
+  }
+
   private applyRuntimeKeys() {
     const configuredProviders = new Set<string>();
 
     for (const provider of this.providers.values()) {
-      const apiKey = (process.env[provider.apiKeyEnv] || '').trim();
+      const apiKey = this.resolveApiKey(provider);
       if (!apiKey || configuredProviders.has(provider.runtimeProvider)) {
         continue;
       }
@@ -164,15 +282,17 @@ export class LLMProvider {
       throw new Error(`不支持的厂商: ${providerId}`);
     }
 
-    const apiKey = (process.env[provider.apiKeyEnv] || '').trim();
+    const apiKey = this.resolveApiKey(provider);
     if (!apiKey) {
       throw new Error(`缺少 ${provider.apiKeyEnv}，无法调用 ${providerId}`);
     }
-    if (provider.requiresBaseUrl && !provider.baseUrl.trim()) {
+
+    const baseUrl = this.resolveBaseUrl(provider);
+    if (provider.requiresBaseUrl && !baseUrl) {
       throw new Error(`缺少 ${provider.baseUrlEnv}`);
     }
 
-    this.registerProviderModel(provider, modelId);
+    this.registerProviderModel(provider, modelId, baseUrl);
     const model = this.modelRegistry.find(provider.id, modelId);
     if (!model) {
       throw new Error(`模型不可用: ${provider.id}/${modelId}`);
@@ -180,13 +300,13 @@ export class LLMProvider {
     return model;
   }
 
-  private registerProviderModel(provider: ProviderDefinition, modelId: string) {
+  private registerProviderModel(provider: ProviderDefinition, modelId: string, baseUrl: string) {
     const modelSet = this.providerModels.get(provider.id) || new Set<string>();
     modelSet.add(modelId);
     this.providerModels.set(provider.id, modelSet);
 
     this.modelRegistry.registerProvider(provider.id, {
-      baseUrl: provider.baseUrl,
+      baseUrl,
       apiKey: provider.apiKeyEnv,
       api: 'openai-completions',
       models: Array.from(modelSet).map(id => ({
@@ -197,8 +317,29 @@ export class LLMProvider {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 131072,
         maxTokens: 8192,
+        ...(provider.compat ? { compat: provider.compat } : {}),
       })),
     });
+  }
+
+  private resolveApiKey(provider: ProviderDefinition): string {
+    const override = this.runtimeStore.providers?.[provider.id]?.apiKey || '';
+    if (override.trim()) {
+      return override.trim();
+    }
+    return (process.env[provider.apiKeyEnv] || '').trim();
+  }
+
+  private resolveBaseUrl(provider: ProviderDefinition): string {
+    const override = this.runtimeStore.providers?.[provider.id]?.baseUrl || '';
+    if (override.trim()) {
+      return override.trim();
+    }
+    const envBase = (process.env[provider.baseUrlEnv] || '').trim();
+    if (envBase) {
+      return envBase;
+    }
+    return provider.defaultBaseUrl;
   }
 
   private buildProviders(): Map<string, ProviderDefinition> {
@@ -208,25 +349,34 @@ export class LLMProvider {
         name: 'Qwen',
         apiKeyEnv: 'QWEN_API_KEY',
         runtimeProvider: 'qwen',
-        baseUrl: process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         requiresBaseUrl: true,
         baseUrlEnv: 'QWEN_BASE_URL',
+        compat: {
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: false,
+          thinkingFormat: 'qwen',
+        },
       },
       {
         id: 'zhipu',
         name: 'Zhipu',
         apiKeyEnv: 'ZHIPU_API_KEY',
         runtimeProvider: 'zhipu',
-        baseUrl: process.env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4',
+        defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4',
         requiresBaseUrl: true,
         baseUrlEnv: 'ZHIPU_BASE_URL',
+        compat: {
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: false,
+        },
       },
       {
         id: 'deepseek',
         name: 'DeepSeek',
         apiKeyEnv: 'DEEPSEEK_API_KEY',
         runtimeProvider: 'deepseek',
-        baseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1',
+        defaultBaseUrl: 'https://api.deepseek.com/v1',
         requiresBaseUrl: true,
         baseUrlEnv: 'DEEPSEEK_BASE_URL',
       },
@@ -235,7 +385,7 @@ export class LLMProvider {
         name: 'OpenAI',
         apiKeyEnv: 'OPENAI_API_KEY',
         runtimeProvider: 'openai',
-        baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+        defaultBaseUrl: 'https://api.openai.com/v1',
         requiresBaseUrl: true,
         baseUrlEnv: 'OPENAI_BASE_URL',
       },
@@ -244,9 +394,13 @@ export class LLMProvider {
         name: 'OpenAI Compatible',
         apiKeyEnv: 'OPENAI_API_KEY',
         runtimeProvider: 'openai',
-        baseUrl: process.env.OPENAI_BASE_URL || '',
+        defaultBaseUrl: '',
         requiresBaseUrl: true,
         baseUrlEnv: 'OPENAI_BASE_URL',
+        compat: {
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: false,
+        },
       },
     ];
 

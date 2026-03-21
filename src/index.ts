@@ -22,6 +22,17 @@ interface ChatBody {
   model?: string;
 }
 
+interface RuntimeConfigBody {
+  provider?: string;
+  model?: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
+interface SoulBody {
+  content?: string;
+}
+
 class MindBuddy {
   private app: ReturnType<typeof Fastify>;
   private wsServer: WebSocketServer | null;
@@ -99,13 +110,45 @@ class MindBuddy {
 
     this.app.get('/context', async () => this.dataSources.getContext());
     this.app.get('/api/context', async () => this.dataSources.getContext());
-    this.app.get('/api/models', async () => ({
-      providers: this.llm.getProviders(),
-      defaults: {
-        provider: this.llm.getProvider(),
-        model: this.llm.getModel(),
-      },
+    this.app.get('/api/models', async () => this.llm.getRuntimeConfig());
+    this.app.get('/api/runtime-config', async () => this.llm.getRuntimeConfig());
+    this.app.put('/api/runtime-config', async (request: FastifyRequest<{ Body: RuntimeConfigBody }>) => {
+      const provider = typeof request.body?.provider === 'string' ? request.body.provider.trim() : undefined;
+      const model = typeof request.body?.model === 'string' ? request.body.model.trim() : undefined;
+      const apiKey = typeof request.body?.apiKey === 'string' ? request.body.apiKey.trim() : undefined;
+      const baseUrl = request.body?.baseUrl;
+
+      const providerSettings = provider
+        ? {
+            [provider]: {
+              ...(apiKey ? { apiKey } : {}),
+              ...(typeof baseUrl === 'string' ? { baseUrl } : {}),
+            },
+          }
+        : {};
+
+      return this.llm.updateRuntimeConfig({
+        ...(typeof provider === 'string' ? { provider } : {}),
+        ...(typeof model === 'string' ? { model } : {}),
+        providerSettings,
+      });
+    });
+    this.app.get('/api/soul', async () => ({
+      path: this.soul.getPath(),
+      content: this.soul.getPrompt(),
     }));
+    this.app.put('/api/soul', async (request: FastifyRequest<{ Body: SoulBody }>, reply: FastifyReply) => {
+      const content = request.body?.content || '';
+      if (!content.trim()) {
+        reply.code(400);
+        return { error: 'content is required' };
+      }
+      this.soul.setPrompt(content);
+      return {
+        path: this.soul.getPath(),
+        content: this.soul.getPrompt(),
+      };
+    });
 
     this.app.post('/api/chat', async (request: FastifyRequest<{ Body: ChatBody }>, reply: FastifyReply) => {
       const text = (request.body?.text || '').trim();
